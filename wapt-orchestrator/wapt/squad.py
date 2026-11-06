@@ -31,8 +31,62 @@ from dataclasses import dataclass, field
 from . import templating as T
 from . import tailor as TL
 from . import teach
-from .models import Candidate, Confidence, Stage, Transaction
+from .models import IMPACT, Candidate, Confidence, Stage, Transaction
 from .triage import TITLES, triage
+
+
+# confidence enum -> a percentage the dashboard can show (spec: "XSS Agent 92%")
+_CONF_PCT = {Confidence.LOW: 45, Confidence.MEDIUM: 72, Confidence.HIGH: 88,
+             Confidence.CONFIRMED: 98}
+
+
+def confidence_pct(cand: Candidate) -> int:
+    """A 0-100 success-likelihood for ranking, from confidence + corroboration."""
+    if cand.confirmed:
+        return 98
+    base = _CONF_PCT.get(Confidence(cand.confidence), 50)
+    # more signals / locations = a little more certain
+    bump = min(len(cand.signals) - 1, 3) * 2
+    return min(base + bump, 97)
+
+
+def severity(vuln_class: str) -> str:
+    """Risk rating from the impact weighting (spec: Severity / Risk rating)."""
+    imp = IMPACT.get(vuln_class, 5)
+    return ("Critical" if imp >= 9 else "High" if imp >= 7
+            else "Medium" if imp >= 5 else "Low")
+
+
+def repro_card(cand: Candidate) -> dict:
+    """Structured reproduction in the spec's exact shape: Vulnerability /
+    Endpoint / Payload / Steps / Evidence / Outcome."""
+    lesson = teach.lesson(cand.vuln_class)
+    path = (cand.target_url or cand.location).split("?", 1)[0]
+    endpoint = path + (f"  (param {cand.param})" if cand.param else "")
+    exploit = next((p for p in cand.tailored if p.kind == "exploit"), None) \
+        or next((p for p in cand.payloads if p.kind == "exploit"), None)
+    detect = next((p for p in cand.tailored if p.kind == "detect"), None) \
+        or next((p for p in cand.payloads if p.kind == "detect"), None)
+    steps = [
+        "Open Burp and send the endpoint's request to Repeater.",
+        f"Inject the detect probe into {cand.param or 'the input'}: "
+        f"{(detect.body.splitlines()[0] if detect else lesson['tell'])}",
+        f"Forward and observe: {lesson['tell']}",
+        f"Once confirmed, swap in the exploit payload: "
+        f"{(exploit.body.splitlines()[0] if exploit else '(see payload bank)')}",
+        "Deliver it (exploit server / browser) and capture the result toward the flag.",
+    ]
+    return {
+        "vulnerability": TITLES.get(cand.vuln_class, cand.vuln_class),
+        "endpoint": endpoint,
+        "payload": (exploit.body.splitlines()[0] if exploit
+                    else (detect.body.splitlines()[0] if detect else "")),
+        "steps": steps,
+        "evidence": (cand.confirm_note or cand.evidence or "input reflected / error triggered"),
+        "outcome": ("Confirmed " + TITLES.get(cand.vuln_class, cand.vuln_class)
+                    if cand.confirmed else "Candidate — confirm with the steps above"),
+        "why": lesson["why"],
+    }
 
 
 def reproduction(cand: Candidate) -> list[str]:
@@ -163,6 +217,11 @@ class VulnFinding:
     confirm_note: str = ""
     labs: list[str] = field(default_factory=list)
     repro: list[str] = field(default_factory=list)
+    repro_card: dict = field(default_factory=dict)
+    status: str = "standby"          # standby|testing|found|confirmed
+    pct: int = 0                     # success-likelihood %
+    severity: str = ""
+    evidence: str = ""
     candidate: Candidate | None = None
     score: float = 0.0
 
@@ -221,8 +280,11 @@ class VulnAgent:
              ph: dict[str, str], confirm_fn=None) -> VulnFinding:
         f = VulnFinding(vuln_class=self.vuln_class, agent=self.name, stage=self.stage)
         f.targets = self._injection_points(txns)
+        f.severity = severity(self.vuln_class)
         cand = stage_candidates.get(self.vuln_class)
         if cand is None:
+            # roster is up: if it has inputs to hit it's "testing", else "standby"
+            f.status = "testing" if f.targets else "standby"
             return f  # nothing seen for this class — agent stands down
         f.found = True
         f.candidate = cand
@@ -235,7 +297,11 @@ class VulnAgent:
         top = exploit or (cand.payloads[0] if cand.payloads else None)
         f.top_payload = top.body if top else ""
         f.confidence = str(cand.confidence)
+        f.pct = confidence_pct(cand)
+        f.evidence = cand.evidence
         f.repro = reproduction(cand)
+        f.repro_card = repro_card(cand)
+        f.status = "confirmed" if cand.confirmed else "found"
         # live probe (optional) — this agent fires its own safe confirm
         if confirm_fn is not None:
             try:
@@ -244,6 +310,10 @@ class VulnAgent:
                 pass
             f.confirmed = bool(cand.confirmed)
             f.confirm_note = cand.confirm_note
+            if f.confirmed:
+                f.status = "confirmed"
+                f.pct = 98
+                f.repro_card = repro_card(cand)   # refresh evidence/outcome
         f.score = cand.score
         return f
 
@@ -335,6 +405,9 @@ class SquadCoordinator:
                         "payload": (f.top_payload.splitlines()[0][:160] if f.top_payload else ""),
                         "labs": f.labs,
                         "repro": f.repro,
+                        "repro_card": f.repro_card,
+                        "status": f.status, "pct": f.pct,
+                        "severity": f.severity, "evidence": f.evidence,
                     } for f in rep.findings
                 ],
             })
@@ -358,7 +431,7 @@ class SquadCoordinator:
                 lines.append("  RANKED ATTACK VECTORS (most promising first):")
                 for i, f in enumerate(hits, 1):
                     tick = " ✓CONFIRMED" if f.confirmed else ""
-                    lines.append(f"    #{i}  {f.agent} — {f.confidence}{tick}  @ {f.where}")
+                    lines.append(f"    #{i}  {f.agent} - {f.pct}%  [{f.severity}]{tick}  @ {f.where}")
                 lead = hits[0]
                 lines.append("")
                 lines.append(f"  >>> FOOTHOLD LEAD: {lead.agent} ({lead.confidence})")
