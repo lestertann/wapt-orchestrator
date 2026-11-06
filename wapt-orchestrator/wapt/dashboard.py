@@ -417,7 +417,7 @@ async function renderKillchain(){
           + (st.alternatives&&st.alternatives.length?`<div style="color:#687684;font-size:11px;margin-top:3px">also seen: ${esc(st.alternatives.join(', '))}</div>`:'')
         : `<div style="color:#687684;margin-top:3px">${esc(st.goal)}</div>`;
       return `<div style="padding:9px 11px;border-left:3px solid ${col};background:${on?'#1b2430':'#141a22'};border-radius:6px;margin-bottom:6px">
-        <div style="font-weight:600;color:#e6edf3">STAGE ${st.stage} — ${esc(label[st.stage]||st.name)} ${st.solved?'<span style=\\'color:#2ea043\\'>✓ lead ready</span>':''}</div>
+        <div style="font-weight:600;color:#e6edf3">STAGE ${st.stage} — ${esc(label[st.stage]||st.name)} ${st.solved?'<span style="color:#2ea043">✓ lead ready</span>':''}</div>
         <div style="margin-top:2px">${lead}</div>${plan}</div>`;
     }).join('');
     box.innerHTML = `<div style="font-weight:700;color:#e6edf3;margin:2px 0 7px">🤖 Agent kill-chain — ${d.solved}/3 stages have an actionable lead</div>${rows}`;
