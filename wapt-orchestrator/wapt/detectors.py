@@ -134,16 +134,29 @@ def d_web_message(t, ctx) -> Iterable[Signal]:
 def d_reflected_input(t, ctx) -> Iterable[Signal]:
     """search/comment reflects input -> reflected/stored XSS."""
     b = _body(t)
+    SEARCHISH = {"search", "q", "query", "s", "searchterm", "term", "keyword", "keywords"}
+
     for p in _params(t):
         if p.lower() in _TOKEN_PARAMS:
             continue  # reflecting a CSRF token / nonce is normal, not XSS
-        val = _qval(t.url, p) or _qval("?" + (t.req_body or ""), p)
-        if not val or len(val) < 3 or not _looks_textual(val) or val not in b:
-            continue
-        yield Signal("reflected-stored-xss",
-                     f"param '{p}' reflected unencoded in the response body",
-                     C.MEDIUM, f"{t.url}  (param {p})", evidence=val[:60], txn=t)
-        break
+
+        val = _qval(t.url, p) or _qval("?" + (t.req_body or ""), p) or ""
+        name_l = p.lower()
+
+        # Strong signal: reasonably long textual value that reflects exactly
+        if val and len(val) >= 3 and _looks_textual(val) and val in b:
+            yield Signal("reflected-stored-xss",
+                         f"param '{p}' reflected unencoded in the response body",
+                         C.MEDIUM, f"{t.url}  (param {p})", evidence=val[:60], txn=t)
+            break
+
+        # Weaker but very useful signal: common search param name seen at all
+        # (so Confirm / Autopilot can probe it even if the current value is short)
+        if name_l in SEARCHISH:
+            yield Signal("reflected-stored-xss",
+                         f"search-like param '{p}' present — probe for reflection",
+                         C.LOW, f"{t.url}  (param {p})", evidence=f"param name {p}", txn=t)
+            break
 
 
 @detector(Stage.FOOTHOLD)
