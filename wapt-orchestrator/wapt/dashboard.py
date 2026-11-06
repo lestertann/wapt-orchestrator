@@ -207,6 +207,7 @@ PAGE = r"""<!doctype html>
   </details>
   <div class="stages" id="stages"></div>
   <div class="killchain" id="killchain" style="display:none"></div>
+  <div class="killchain" id="squad" style="display:none"></div>
   <div class="bar">
     <button class="proceed" id="proceed" disabled>Proceed →</button>
     <button class="ghost" id="crawl">🕷 Crawl target</button>
@@ -425,6 +426,32 @@ async function renderKillchain(){
   }catch(e){ /* agents endpoint optional */ }
 }
 
+async function renderSquad(){
+  try{
+    const d = await (await fetch('/api/squad')).json();
+    const box = $('#squad');
+    if(!d || !d.stages){ box.style.display='none'; return; }
+    const rows = d.stages.map(st=>{
+      const on = (st.stage===('FOOTHOLD PRIVESC EXFIL'.split(' ')[d.current-1]));
+      const chips = st.agents.map(a=>{
+        const col = a.confirmed? '#2ea043' : (a.found? '#d29922' : '#2b333c');
+        const fg  = a.found? '#0d1117' : '#6b7681';
+        const tip = a.found? `${a.where}${a.param?' · '+a.param:''}` : (a.targets||[]).join(', ');
+        const mark= a.confirmed? '✓ ' : '';
+        return `<span title="${esc(tip)}" style="display:inline-block;margin:2px 3px 0 0;padding:2px 7px;border-radius:10px;font-size:11px;background:${col};color:${fg};font-weight:${a.found?'700':'400'}">${mark}${esc(a.agent)}</span>`;
+      }).join('');
+      const lead = st.lead? `<b style="color:#d29922">${esc(st.lead)}</b> has the lead` : '<span style="color:#687684">no agent has a lead yet</span>';
+      const pl = st.agents.find(a=>a.found && a.payload);
+      const plrow = pl? `<pre style="margin:5px 0 0;white-space:pre-wrap;color:#7ee787;font-size:11px;max-height:42px;overflow:auto">${esc(pl.payload)}</pre>`:'';
+      return `<div style="padding:8px 10px;border-left:3px solid ${st.solved?'#2ea043':(st.lead?'#d29922':'#54636e')};background:${on?'#1b2430':'#141a22'};border-radius:6px;margin-bottom:6px">
+        <div style="font-weight:600;color:#e6edf3">STAGE ${st.stage} · ${st.agents.length} agents up — ${lead}</div>
+        <div style="margin-top:5px;line-height:1.9">${chips}</div>${plrow}</div>`;
+    }).join('');
+    box.innerHTML = `<div style="font-weight:700;color:#e6edf3;margin:2px 0 7px">🛰 Specialist squad — only each stage's own vuln-class agents run</div>${rows}`;
+    box.style.display='block';
+  }catch(e){ /* squad endpoint optional */ }
+}
+
 async function tick(){
   if(busy) return;
   try{
@@ -445,6 +472,7 @@ async function tick(){
     renderDoNow(s.next_action);
     renderLearn(s);
     renderKillchain();
+    renderSquad();
     const ago = s.last_ingest_ago;
     $('#live').innerHTML = ago==null ? '● <span style="color:#67788a">waiting for traffic…</span>'
       : (ago<5 ? '<span class="on">● live</span>' : `● last ${ago}s ago`);

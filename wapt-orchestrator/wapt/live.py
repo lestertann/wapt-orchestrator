@@ -215,6 +215,18 @@ class LiveState:
         return {"stages": stages, "solved": done, "total": 3,
                 "current": int(self.current)}
 
+    def squad_report(self) -> dict:
+        """Run the per-stage specialist-agent squad over current traffic. Only
+        the stage's own vuln-class agents are brought up — Stage 1's 10, Stage
+        2's 8, Stage 3's 8. Powers the dashboard's squad panel (GET /api/squad)."""
+        from .squad import SquadCoordinator
+        coord = SquadCoordinator()
+        reports = coord.run(self.txns, self.ph, gate_fn=lambda r: True)
+        snap = coord.snapshot(reports)
+        done = sum(1 for s in snap if s["solved"])
+        return {"stages": snap, "solved": done, "total": 3,
+                "current": int(self.current)}
+
     def _next_action(self, cands: list) -> dict | None:
         if not self.txns:
             return {"headline": "Open the lab in Burp's browser once",
@@ -509,6 +521,8 @@ def make_handler(state: LiveState):
                 return self._send(200, state.audit_log(), "text/plain; charset=utf-8")
             if self.path.startswith("/api/agents"):
                 return self._send(200, json.dumps(state.agents_report()))
+            if self.path.startswith("/api/squad"):
+                return self._send(200, json.dumps(state.squad_report()))
             return self._send(404, "{}")
 
         def do_POST(self):

@@ -72,6 +72,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-items", type=int, default=None,
                    help="cap transactions ingested (useful for big .burp files)")
     p.add_argument("--no-payloads", action="store_true", help="hide payloads on the board")
+    p.add_argument("--squad", action="store_true",
+                   help="run the specialist-agent squad: one agent per vuln class, "
+                        "dispatched per stage (only that stage's classes run)")
     p.add_argument("--agents", action="store_true",
                    help="run the autonomous BSCP stage agents (goal-oriented coordinator "
                         "report: one actionable lead + action plan per stage)")
@@ -151,10 +154,32 @@ def main(argv=None) -> int:
         print("no traffic to triage — check the input file or the crawl URL.", file=sys.stderr)
         return 2
 
+    ph = {"LAB": cfg.lab or "", "EXPLOIT": cfg.exploit or "", "COLLAB": cfg.collab or ""}
+
+    # ---- squad mode: per-stage specialist agents (one per vuln class) ----
+    if args.squad:
+        from wapt.squad import SquadCoordinator
+        confirm_fn = None
+        if cfg.lab:
+            try:
+                from wapt.http_client import ScopedSession
+                from wapt.confirm import confirm_candidate
+                sess = ScopedSession(cfg)
+                if sess.sess is not None:
+                    def confirm_fn(c, _s=sess, _collab=cfg.collab or ""):
+                        v = confirm_candidate(_s, c, _collab)
+                        c.confirmed = bool(getattr(v, "ok", False))
+                        c.confirm_note = getattr(v, "note", "")
+            except Exception:
+                confirm_fn = None
+        coord = SquadCoordinator()
+        reports = coord.run(txns, ph, gate_fn=lambda r: True, confirm_fn=confirm_fn)
+        print(coord.report(reports))
+        return 0
+
     # ---- autonomous agent mode: goal-oriented per-stage coordinator ----
     if args.agents:
         from wapt.agents import ExamCoordinator
-        ph = {"LAB": cfg.lab or "", "EXPLOIT": cfg.exploit or "", "COLLAB": cfg.collab or ""}
         coord = ExamCoordinator()
         results = coord.run(txns, ph, gate_fn=lambda r: True)
         print(coord.report(results))
