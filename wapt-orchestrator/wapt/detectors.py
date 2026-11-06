@@ -102,12 +102,19 @@ def d_dom_xss(t, ctx) -> Iterable[Signal]:
     b = _body(t)
     if not b:
         return
-    sources = re.findall(r"location\.(?:search|hash|href)|document\.referrer|window\.name", b)
-    sinks = re.findall(r"\.innerHTML|document\.write|\beval\(|\.outerHTML|location\s*=", b)
+    sources = re.findall(r"location\.(?:search|hash|href)|location\b|document\.(?:URL|referrer)|window\.name", b)
+    sinks = re.findall(r"\.innerHTML|document\.write|\beval\(|\bFunction\(|\.outerHTML|setTimeout\(|insertAdjacentHTML|\.src\s*=|location\s*=", b)
     if sources and sinks:
+        # eval()/Function() on a URL-controlled source = direct code execution
+        # (the classic reflected-into-eval DOM XSS); rank it HIGH, others MEDIUM.
+        code_sink = next((s for s in sinks if "eval(" in s or "Function(" in s), "")
+        conf = C.HIGH if code_sink else C.MEDIUM
+        sink = code_sink or sinks[0]
         yield Signal("dom-xss",
-                     f"JS source ({sources[0]}) + sink ({sinks[0].strip()}) in same script",
-                     C.MEDIUM, t.url, evidence=f"{sources[0]} … {sinks[0]}", txn=t)
+                     f"JS source ({sources[0]}) flows to sink ({sink.strip()}) in "
+                     + t.url.rsplit('/', 1)[-1]
+                     + (" — reflected-into-eval, steal the cookie" if code_sink else ""),
+                     conf, t.url, evidence=f"{sources[0]} … {sink}", txn=t)
 
 
 @detector(Stage.FOOTHOLD)
@@ -213,15 +220,15 @@ def d_login_enum(t, ctx) -> Iterable[Signal]:
     has_user = re.search(r'name=["\']?(username|user|email|login)\b', b, re.I) is not None
     if has_pw and has_user:
         reset = re.search(r'forgot|reset|refreshpassword', b + t.url, re.I) is not None
-        register = re.search(r'register|sign-?up|create account', b, re.I) is not None
-        # a login with a reset flow but NO self-registration is the classic
-        # enumerate-then-brute foothold — rank it a real lead, not a maybe.
-        conf = C.MEDIUM if (reset and not register) else C.LOW
-        extra = " + password-reset flow, no self-registration" if (reset and not register) else ""
+        # The mere presence of a login form is only a WEAK hint — many labs have
+        # a login but the real foothold is elsewhere (DOM XSS, etc.). Keep this
+        # LOW so a confirmed reflection/DOM/SQLi finding always outranks it;
+        # it becomes the lead only when nothing stronger is found.
+        extra = " + password-reset flow" if reset else ""
         yield Signal("user-enum-brute",
-                     "login form (username+password)" + extra +
-                     " — enumerate a valid username, then brute-force the password with Burp Intruder",
-                     conf, t.url, evidence="login form" + extra, txn=t)
+                     "login form present" + extra +
+                     " — IF nothing else lands, enumerate a username then brute the password (Burp Intruder)",
+                     C.LOW, t.url, evidence="login form" + extra, txn=t)
 
 
 @detector(Stage.FOOTHOLD)
@@ -253,9 +260,16 @@ def d_cswsh(t, ctx) -> Iterable[Signal]:
 def d_content_disc(t, ctx) -> Iterable[Signal]:
     """hidden endpoints, backups, git, secrets, verbose errors."""
     u = t.url.lower()
-    if any(k in u for k in ("/.git", "/backup", "~", "robots.txt", "sitemap.xml", ".bak", ".old")):
+    if any(k in u for k in ("/.git", "/backup", "~", "robots.txt", "sitemap.xml", ".bak", ".old", ".env", ".sql")):
         yield Signal("content-discovery", f"sensitive path exposed: {u.rsplit('/',1)[-1]}",
                      C.HIGH if t.status == 200 else C.LOW, t.url, evidence=f"status {t.status}", txn=t)
+    # an endpoint that EXISTS but is access-controlled — the recon win that
+    # points straight at the Stage 2 target (admin panel / internal API).
+    if t.status in (401, 403) and re.search(r"/(admin|console|panel|manage|management|internal|api|actuator|metrics)\b", u):
+        name = t.url.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+        yield Signal("content-discovery",
+                     f"protected endpoint found ({t.status}): /{name} — access-control / privesc target",
+                     C.MEDIUM, t.url, evidence=f"status {t.status}", txn=t)
     if t.status and t.status >= 500 and re.search(r"stack trace|exception|at [\w.]+\(|SQLSTATE|Traceback", _body(t), re.I):
         yield Signal("content-discovery", "verbose error / stack trace disclosed",
                      C.MEDIUM, t.url, evidence="error page", txn=t)

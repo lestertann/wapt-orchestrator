@@ -386,7 +386,10 @@ class LiveState:
 
     def _crawl_worker(self, max_pages: int) -> None:
         from urllib.parse import urljoin, urlparse
-        href = re.compile(r'(?:href|src|action)=["\']([^"\'#]+)["\']', re.I)
+        # quote-optional: PortSwigger writes <script src=/resources/js/x.js>
+        # unquoted, so a quoted-only regex never fetches the JS that holds the
+        # DOM-XSS sink. Capture quoted "…"/'…' and bare src/href values alike.
+        href = re.compile(r'(?:href|src|action)=(?:"([^"#]+)"|\'([^\'#]+)\'|([^\s>#]+))', re.I)
         try:
             # start from the scheme+host we've actually been seeing (https for real
             # labs); fall back to https://<lab>/ if we have no traffic yet
@@ -428,7 +431,10 @@ class LiveState:
                     if key not in self._inject_seen:
                         self._inject_seen.add(key)
                         inject_points.append(ip)
-                for h in href.findall(body):
+                for g in href.findall(body):
+                    h = next((x for x in g if x), "")   # quote-optional tuple -> value
+                    if not h:
+                        continue
                     nxt = urljoin(url, h)
                     if urlparse(nxt).netloc == origin and nxt not in seen and nxt not in queue:
                         # skip logout / destructive links while crawling
