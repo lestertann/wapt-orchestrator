@@ -497,11 +497,10 @@ class LiveState:
         return next((g for g in groups if g), "")
 
     def _inputs_on_page(self, page_url, body):
-        """Return [(method, action_url, param, extra_params_dict)] for every
-        form field and query-bearing link on this page. These are the inputs
-        the crawl will safely canary-probe. Handles unquoted HTML attributes."""
         from urllib.parse import urljoin, urlparse, parse_qs
         out = []
+        searchish = {"search", "q", "query", "s", "searchterm", "term", "keyword", "keywords"}
+
         # 1) HTML forms
         for m in re.finditer(r"<form\b([^>]*)>(.*?)</form>", body, re.I | re.S):
             attrs, inner = m.group(1), m.group(2)
@@ -512,10 +511,16 @@ class LiveState:
             method = (self._first(mm.groups()).upper() if mm else "GET")
             fields = [self._first(g) for g in self._FIELD_RE.findall(inner)]
             fields = [f for f in fields
-                      if f and f.lower() not in ("csrf", "csrftoken", "_token", "authenticity_token")]
+                    if f and f.lower() not in ("csrf", "csrftoken", "_token",
+                                                "authenticity_token", "nonce")]
+
+            # Put search-like fields first
+            fields.sort(key=lambda f: 0 if f.lower() in searchish else 1)
+
             for f in fields:
                 extra = {g: "test" for g in fields if g != f}
                 out.append((method, action, f, extra))
+
         # 2) query-string links (GET params already in the page)
         for g in self._QUERY_LINK.findall(body):
             link = self._first(g)
@@ -529,42 +534,100 @@ class LiveState:
                     continue
                 extra = {k: (v[0] if v else "") for k, v in params.items() if k != p}
                 out.append(("GET", base, p, extra))
-        return out[:40]
 
-    def _active_probe(self, points, cookie, max_probes: int = 80):
-        """Fire two safe canaries per input: an alnum reflection marker and a
-        single-quote SQL marker. Reflections -> XSS signal; SQL errors ->
-        SQLi signal. Purely detective: no exploit payloads."""
+        # Prioritise any search-like param across the whole list
+        out.sort(key=lambda x: 0 if x[2].lower() in searchish else 1)
+        return out[:50]
+
+    def _active_probe(self, points, cookie, max_probes: int = 120):
+        """Fire strong canaries into every input. Search-like parameters get
+        multiple XSS canaries first. Purely detective — no exploit payloads."""
         from urllib.parse import urlencode
         import random
         hdr = {"Cookie": cookie} if cookie else None
         fired = 0
+        searchish = {"search", "q", "query", "s", "searchterm", "term", "keyword", "keywords"}
+
+        # Stronger XSS canaries (survive basic filters and trigger the detector)
+        XSS_CANARIES = [
+            "waptXssCanary99",
+            "waptXss\"<svg/onload=1>",
+            "waptXss'><img src=x onerror=1>",
+            "waptXss\" onmouseover=1 ",
+        ]
+
         for method, action, param, extra in points:
             if fired >= max_probes:
                 break
-            tag = f"{random.randrange(16**6):06x}"
-            short = action.split("//", 1)[-1].split("/", 1)[-1]
-            for kind, canary in (("XSS/reflection", f"wapt{tag}"),
-                                 ("SQLi/quote", f"wapt{tag}'")):
+
+            is_search = param.lower() in searchish
+            short = action.split("//", 1)[-1].split("/", 1)[-1][:40]
+
+            # 1) Always fire a clean reflection canary
+            canaries = [("XSS/reflection", f"wapt{random.randrange(16**6):06x}")]
+
+            # 2) For search-like params, also fire the stronger XSS canaries
+            if is_search:
+                for c in XSS_CANARIES:
+                    canaries.append(("XSS/strong", c))
+
+            # 3) Always try a SQL quote as well
+            canaries.append(("SQLi/quote", f"wapt{random.randrange(16**6):06x}'"))
+
+            for kind, canary in canaries:
                 if fired >= max_probes:
                     break
-                data = dict(extra); data[param] = canary
+                data = dict(extra)
+                data[param] = canary
                 note = f"{kind} probe → {param} @ /{short}"
                 try:
                     if method == "POST":
-                        txn = self.session.fetch("POST", action, headers=hdr,
-                                                 body=urlencode(data), note=note)
+                        txn = self.session.fetch(
+                            "POST", action, headers=hdr,
+                            body=urlencode(data), note=note
+                        )
                     else:
                         q = urlencode(data)
-                        txn = self.session.fetch("GET", f"{action}?{q}", headers=hdr,
-                                                 note=note)
+                        txn = self.session.fetch(
+                            "GET", f"{action}?{q}", headers=hdr, note=note
+                        )
                 except Exception:
                     continue
                 if txn is not None:
                     fired += 1
                     self.add(txn)
-        # header probes — Host/X-Forwarded-Host (reset poisoning) + Origin (CORS)
+
+        # Also force-probe the most common search entry points on the homepage
+        self._force_search_probes(cookie)
+
+        # Existing header probes
         self._probe_headers(cookie)
+
+    def _force_search_probes(self, cookie):
+        """Force common search entry points that many PortSwigger labs use.
+        This guarantees the search XSS surface is exercised even if form
+        parsing missed it."""
+        if not self.cfg.lab:
+            return
+        hdr = {"Cookie": cookie} if cookie else None
+        base = f"https://{self.cfg.lab}"
+        canary = "waptForceSearch99"
+
+        candidates = [
+            f"{base}/?search={canary}",
+            f"{base}/?SearchTerm={canary}",
+            f"{base}/?q={canary}",
+            f"{base}/search?search={canary}",
+            f"{base}/search?SearchTerm={canary}",
+        ]
+        for url in candidates:
+            try:
+                txn = self.session.fetch("GET", url, headers=hdr,
+                                        note="force-search probe")
+                if txn is not None:
+                    self.add(txn)
+            except Exception:
+                continue
 
     def _probe_headers(self, cookie):
         """Test the headers a WAPT actually tampers: X-Forwarded-Host (password
