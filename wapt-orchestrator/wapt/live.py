@@ -435,10 +435,47 @@ class LiveState:
                         if re.search(r"logout|signout|delete|/admin/delete", nxt, re.I):
                             continue
                         queue.append(nxt)
+            # ---- content discovery: gobuster-style path sweep ----
+            self._content_discovery(cookie)
             # ---- active probe pass: fire safe canaries into every input ----
             self._active_probe(inject_points, cookie)
         finally:
             self._crawling = False
+
+    # a compact, BSCP-relevant path wordlist (not a 10k gobuster list — enough
+    # to surface the admin panel, APIs, backups, VCS and debug endpoints that
+    # the exam hides, without hammering the lab).
+    _WORDLIST = [
+        "admin", "administrator", "admin-panel", "adminpanel", "panel",
+        "login", "logout", "register", "signup", "user", "users", "account",
+        "my-account", "profile", "settings", "console", "manage", "management",
+        "internal", "api", "api/v1", "api/v2", "graphql", "rest", "swagger",
+        "swagger-ui", "api-docs", "openapi.json", "status", "health",
+        "actuator", "actuator/health", "metrics", "debug", "test", "dev",
+        "staging", "backup", "backups", "backup.zip", "backup.tar.gz",
+        "backup.sql", "db.sql", "config", "config.php", ".env", ".git/HEAD",
+        "robots.txt", "sitemap.xml", "server-status", "phpinfo.php",
+        "cgi-bin", "uploads", "files", "download", "cms", "phpmyadmin",
+        ".well-known/security.txt", "analytics", "cms/login",
+    ]
+
+    def _content_discovery(self, cookie, max_probes: int = 60):
+        """Request a curated wordlist of common paths; keep the ones that exist
+        (200) or are access-controlled (401/403) or error (500). The recon
+        detector then flags admin panels, backups, VCS, APIs and debug pages."""
+        base = f"https://{self.cfg.lab}"
+        hdr = {"Cookie": cookie} if cookie else None
+        for word in self._WORDLIST[:max_probes]:
+            url = f"{base}/{word}"
+            try:
+                txn = self.session.fetch("GET", url, headers=hdr,
+                                         note=f"content-discovery → /{word}")
+            except Exception:
+                continue
+            if txn is None:
+                continue
+            if txn.status in (200, 401, 403, 500):
+                self.add(txn)
 
     # input discovery + active probing -------------------------------------
     # attr value may be "quoted", 'quoted', or bare (PortSwigger omits quotes)
