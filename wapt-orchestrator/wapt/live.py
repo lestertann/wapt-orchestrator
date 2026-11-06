@@ -445,8 +445,25 @@ class LiveState:
             self._content_discovery(cookie)
             # ---- active probe pass: fire safe canaries into every input ----
             self._active_probe(inject_points, cookie)
+            # ---- stored-XSS pass: re-fetch content pages so a canary POSTed to
+            # a comment/form now shows up where it's rendered (stored reflection) ----
+            self._refetch_content_pages(seen, cookie)
         finally:
             self._crawling = False
+
+    def _refetch_content_pages(self, seen, cookie, limit: int = 12):
+        """After probing, re-GET content-view pages (posts, home, comments) so a
+        canary stored via a form surfaces in the body -> stored-XSS detection."""
+        hdr = {"Cookie": cookie} if cookie else None
+        targets = [u for u in seen
+                   if re.search(r"/post\b|/blog\b|/comment|/feedback|/$", u, re.I)][:limit]
+        for u in targets:
+            try:
+                txn = self.session.fetch("GET", u, headers=hdr, note="stored-XSS re-check")
+            except Exception:
+                continue
+            if txn is not None:
+                self.add(txn)
 
     # a compact, BSCP-relevant path wordlist (not a 10k gobuster list — enough
     # to surface the admin panel, APIs, backups, VCS and debug endpoints that

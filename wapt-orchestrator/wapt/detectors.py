@@ -150,6 +150,28 @@ def d_reflected_input(t, ctx) -> Iterable[Signal]:
                          C.MEDIUM, f"{t.url}  (param {p})", evidence=val[:60], txn=t)
             break
 
+        # STORED XSS: the value isn't echoed here, but it surfaces on a DIFFERENT
+        # page (e.g. a comment posted to /post?postId=N shows up when that post is
+        # viewed). Scan the whole captured corpus for the value — a stored hit is
+        # higher impact than reflected, so rank it HIGH.
+        if val and len(val) >= 5 and _looks_textual(val) and val not in b:
+            corpus = ctx.get("_corpus")
+            if corpus is None:
+                corpus = ctx["_corpus"] = [(x.url, _body(x)) for x in ctx.get("txns", [])]
+            for other_url, other_body in corpus:
+                if other_url != t.url and val in other_body:
+                    yield Signal("reflected-stored-xss",
+                                 f"param '{p}' value is stored and rendered on another page "
+                                 f"({other_url.split('?')[0]}) — stored XSS",
+                                 C.HIGH, f"{t.url}  (param {p})",
+                                 evidence=f"{val[:40]} seen at {other_url.split('?')[0]}", txn=t)
+                    break
+            else:
+                pass
+            # if we emitted a stored signal, stop scanning this txn's params
+            if any(val in ob for ou, ob in corpus if ou != t.url):
+                break
+
         # Weaker but very useful signal: common search param name seen at all
         # (so Confirm / Autopilot can probe it even if the current value is short)
         if name_l in SEARCHISH:

@@ -31,7 +31,7 @@ TITLES = {
 
 
 def triage(stage: Stage, txns: list[Transaction], ph: dict[str, str]) -> list[Candidate]:
-    ctx: dict = {}  # reserved for cross-request facts (hosts, tokens seen, etc.)
+    ctx: dict = {"txns": txns}  # cross-request facts (corpus for stored-XSS, etc.)
     by_class: dict[str, list[Signal]] = defaultdict(list)
 
     for fn in detectors_for(stage):
