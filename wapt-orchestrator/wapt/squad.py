@@ -63,6 +63,26 @@ def repro_card(cand: Candidate) -> dict:
     lesson = teach.lesson(cand.vuln_class)
     path = (cand.target_url or cand.location).split("?", 1)[0]
     endpoint = path + (f"  (param {cand.param})" if cand.param else "")
+
+    # auth footholds aren't a single payload — they're an Intruder workflow.
+    if cand.vuln_class == "user-enum-brute":
+        login = path.replace("/sign-in", "/login") if "/sign-in" in path else path
+        return {
+            "vulnerability": "Authentication — username enumeration + password brute-force",
+            "endpoint": f"POST {login}",
+            "payload": "usernames list → then passwords list (PortSwigger auth-lab wordlists)",
+            "steps": [
+                "Submit any login, then send the POST /login request to Burp Intruder.",
+                "Position 1 — mark the username value; load the candidate-usernames list; keep a fixed wrong password.",
+                "Run it, then sort by response Length/Status/Time — the odd one out is a VALID username.",
+                "New attack — fix that username, mark the password value, load the candidate-passwords list.",
+                "The response with a different length / a 302 redirect = the valid password.",
+                "Log in with the pair to get a user session. (If IP-blocked, add header X-Forwarded-For and brute that too.)",
+            ],
+            "evidence": (cand.confirm_note or "login form present; generic error hides a response/timing tell"),
+            "outcome": "User session obtained — Stage 1 foothold complete.",
+            "why": lesson["why"],
+        }
     exploit = next((p for p in cand.tailored if p.kind == "exploit"), None) \
         or next((p for p in cand.payloads if p.kind == "exploit"), None)
     detect = next((p for p in cand.tailored if p.kind == "detect"), None) \

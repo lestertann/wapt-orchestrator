@@ -434,22 +434,33 @@ async function renderSquad(){
     if(!d || !d.stages){ box.style.display='none'; return; }
     const rows = d.stages.map(st=>{
       const on = (st.stage===('FOOTHOLD PRIVESC EXFIL'.split(' ')[d.current-1]));
+      const STCOL = {confirmed:'#2ea043', found:'#d29922', testing:'#388bfd', standby:'#2b333c'};
+      const STLBL = {confirmed:'✓', found:'●', testing:'…', standby:''};
       const chips = st.agents.map(a=>{
-        const col = a.confirmed? '#2ea043' : (a.found? '#d29922' : '#2b333c');
-        const fg  = a.found? '#0d1117' : '#6b7681';
-        const tip = a.found? `${a.where}${a.param?' · '+a.param:''}` : (a.targets||[]).join(', ');
-        const mark= a.confirmed? '✓ ' : '';
-        return `<span title="${esc(tip)}" style="display:inline-block;margin:2px 3px 0 0;padding:2px 7px;border-radius:10px;font-size:11px;background:${col};color:${fg};font-weight:${a.found?'700':'400'}">${mark}${esc(a.agent)}</span>`;
+        const col = STCOL[a.status]||'#2b333c';
+        const active = a.status==='found'||a.status==='confirmed';
+        const fg  = active? '#0d1117' : (a.status==='testing'?'#cdd9e5':'#6b7681');
+        const tip = a.found? `${a.status} · ${a.pct}% · ${a.severity} · ${a.where}${a.param?' · '+a.param:''}`
+                           : `${a.status} · watching: ${(a.targets||[]).join(', ')}`;
+        const mark= STLBL[a.status]? STLBL[a.status]+' ' : '';
+        const pct = a.found? ` ${a.pct}%` : '';
+        return `<span title="${esc(tip)}" style="display:inline-block;margin:2px 3px 0 0;padding:2px 7px;border-radius:10px;font-size:11px;background:${col};color:${fg};font-weight:${active?'700':'400'}">${mark}${esc(a.agent)}${pct}</span>`;
       }).join('');
       const lead = st.lead? `<b style="color:#d29922">${esc(st.lead)}</b> has the lead` : '<span style="color:#687684">no agent has a lead yet</span>';
       const hits = st.agents.filter(a=>a.found);
-      const rank = hits.length? `<div style="margin-top:6px;font-size:12px;color:#adbac7"><b style="color:#e6edf3">Ranked vectors:</b> ${hits.map((a,i)=>`#${i+1} ${esc(a.agent)} <span style="color:#687684">(${esc(a.confidence)}${a.confirmed?' ✓':''})</span>`).join(' · ')}</div>`:'';
+      const rank = hits.length? `<div style="margin-top:6px;font-size:12px;color:#adbac7"><b style="color:#e6edf3">Agent ranking:</b><br>${hits.map((a,i)=>`${i+1}. ${esc(a.agent)} — <b style="color:#d29922">${a.pct}%</b> <span style="color:#687684">[${esc(a.severity)}]${a.confirmed?' ✓confirmed':''}</span>`).join('<br>')}</div>`:'';
       const leadA = hits[0];
-      const repro = (leadA && leadA.repro && leadA.repro.length)
-        ? `<details style="margin-top:6px"><summary style="cursor:pointer;color:#58a6ff;font-size:12px">▸ Recreate it yourself (${esc(leadA.agent)})</summary>`
-          + `<ol style="margin:6px 0 0 2px;padding-left:18px;color:#adbac7;font-size:12px;line-height:1.5">`
-          + leadA.repro.map(s=>`<li style="margin-bottom:4px">${esc(s).replace(/\\n\\s*/g,'<br><code style=\"color:#7ee787\">').replace(/$/,'')}</li>`).join('')
-          + `</ol></details>` : '';
+      const rc = leadA && leadA.repro_card;
+      const repro = rc && rc.vulnerability
+        ? `<details style="margin-top:7px" open><summary style="cursor:pointer;color:#58a6ff;font-size:12px;font-weight:600">▸ Reproduction walkthrough — ${esc(leadA.agent)}</summary>`
+          + `<div style="margin:6px 0 0;padding:8px 10px;background:#0d1117;border-radius:6px;font-size:12px;line-height:1.5;color:#adbac7">`
+          + `<div><b style="color:#e6edf3">Vulnerability:</b> ${esc(rc.vulnerability)}</div>`
+          + `<div><b style="color:#e6edf3">Endpoint:</b> <code style="color:#7ee787">${esc(rc.endpoint)}</code></div>`
+          + `<div><b style="color:#e6edf3">Payload:</b> <code style="color:#7ee787;word-break:break-all">${esc((rc.payload||'').slice(0,180))}</code></div>`
+          + `<div style="margin-top:4px"><b style="color:#e6edf3">Steps:</b><ol style="margin:3px 0 0;padding-left:18px">${(rc.steps||[]).map(s=>`<li style="margin-bottom:2px">${esc(s)}</li>`).join('')}</ol></div>`
+          + `<div style="margin-top:4px"><b style="color:#e6edf3">Evidence:</b> ${esc(rc.evidence)}</div>`
+          + `<div><b style="color:#e6edf3">Outcome:</b> ${esc(rc.outcome)}</div>`
+          + `</div></details>` : '';
       return `<div style="padding:8px 10px;border-left:3px solid ${st.solved?'#2ea043':(st.lead?'#d29922':'#54636e')};background:${on?'#1b2430':'#141a22'};border-radius:6px;margin-bottom:6px">
         <div style="font-weight:600;color:#e6edf3">STAGE ${st.stage} · ${st.agents.length} agents up — ${lead}</div>
         <div style="margin-top:5px;line-height:1.9">${chips}</div>${rank}${repro}</div>`;

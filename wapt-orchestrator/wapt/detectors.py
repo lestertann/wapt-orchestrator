@@ -195,12 +195,33 @@ def d_smuggle(t, ctx) -> Iterable[Signal]:
 
 @detector(Stage.FOOTHOLD)
 def d_login_enum(t, ctx) -> Iterable[Signal]:
-    """login error wording/timing differs -> user enum + brute (incl. 2FA step)."""
-    if re.search(r"/(log-?in\d?|login\d?|authenticate|mfa|totp|2fa|verify)\b", t.url, re.I) \
+    """login error wording/timing differs -> user enum + brute (incl. 2FA step).
+    Also fires on the login PAGE itself (GET): an auth foothold produces no
+    reflection, so the presence of a username+password form — especially with a
+    password-reset flow and no self-registration — IS the lead to enumerate and
+    brute-force. Without this, a canary crawl sees a login app and reports
+    nothing, which is exactly the blind spot on auth-based Stage 1 exams."""
+    b = _body(t)
+    # a) an explicit auth POST (login / 2FA submit)
+    if re.search(r"/(log-?in\d?|login\d?|authenticate|mfa|totp|2fa|verify|sign-?in)\b", t.url, re.I) \
        and t.method == "POST":
         yield Signal("user-enum-brute",
                      "auth/login POST present — diff valid/invalid username, status, timing; or brute the 2FA code",
-                     C.LOW, t.url, evidence=f"status {t.status}", txn=t)
+                     C.MEDIUM, t.url, evidence=f"status {t.status}", txn=t)
+    # b) the login PAGE itself — a password field + a username/email field
+    has_pw = re.search(r'type=["\']?password', b, re.I) is not None
+    has_user = re.search(r'name=["\']?(username|user|email|login)\b', b, re.I) is not None
+    if has_pw and has_user:
+        reset = re.search(r'forgot|reset|refreshpassword', b + t.url, re.I) is not None
+        register = re.search(r'register|sign-?up|create account', b, re.I) is not None
+        # a login with a reset flow but NO self-registration is the classic
+        # enumerate-then-brute foothold — rank it a real lead, not a maybe.
+        conf = C.MEDIUM if (reset and not register) else C.LOW
+        extra = " + password-reset flow, no self-registration" if (reset and not register) else ""
+        yield Signal("user-enum-brute",
+                     "login form (username+password)" + extra +
+                     " — enumerate a valid username, then brute-force the password with Burp Intruder",
+                     conf, t.url, evidence="login form" + extra, txn=t)
 
 
 @detector(Stage.FOOTHOLD)
