@@ -1,0 +1,5 @@
+samples/*.burp
+samples/*.xml
+samples/*.har
+__pycache__/
+*.pyc

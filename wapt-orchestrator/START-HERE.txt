@@ -1,0 +1,58 @@
+╔══════════════════════════════════════════════════════════════════╗
+║   WAPT ORCHESTRATOR — START HERE (no experience needed)            ║
+╚══════════════════════════════════════════════════════════════════╝
+
+You need two things open: this tool, and Burp Suite (with its browser).
+
+──────────────────────────────────────────────────────────────────
+STEP 1 — Start the tool
+──────────────────────────────────────────────────────────────────
+  • Windows:  double-click   start-windows.bat
+  • Mac:      double-click   start-mac-linux.command
+              (first time: right-click → Open → Open)
+
+  A black window opens and your web browser pops up with the
+  dashboard. Leave the black window alone — that's the engine running.
+
+  (If nothing installs Python for you: get it from python.org,
+   tick "Add to PATH", then double-click the start file again.)
+
+──────────────────────────────────────────────────────────────────
+STEP 2 — Connect Burp to the tool (one time)
+──────────────────────────────────────────────────────────────────
+  In Burp:
+  1. Extensions → Extension settings → Python environment →
+     pick the jython-standalone jar.  (Don't have it? See README.)
+  2. Extensions → Installed → Add → type: Python →
+     choose the file:  burp/wapt_stream.py
+  You should see:  [wapt] streaming to http://127.0.0.1:8777/ingest
+
+──────────────────────────────────────────────────────────────────
+STEP 3 — Tell it your Collaborator (the dashboard will ask)
+──────────────────────────────────────────────────────────────────
+  A pop-up on the dashboard asks for your "Collaborator" address.
+  In Burp: top menu → Collaborator → Copy to clipboard → paste it in.
+  (The target and exploit-server fill in automatically — you don't
+   need to find those.)
+
+──────────────────────────────────────────────────────────────────
+STEP 4 — Open the lab's home page in Burp's browser (that's it)
+──────────────────────────────────────────────────────────────────
+  Just load the lab once. The tool AUTO-CRAWLS the site for you —
+  it visits the pages and forms on its own, so the dashboard fills
+  up without you clicking around. (There's also a "🕷 Crawl target"
+  button to run it again, e.g. after you log in.)
+
+──────────────────────────────────────────────────────────────────
+STEP 5 — Follow the big "⭐ DO THIS NOW" box
+──────────────────────────────────────────────────────────────────
+  The tool always shows ONE next thing to do, in plain words, with
+  the exact text to copy and where to paste it. Do that, then look
+  at the box again for the next step. When a stage is done, click
+  "Proceed →".
+
+  "Autopilot" (top right) is ON: the tool checks findings for you,
+  so cards arrive already marked real ✅ or not.
+
+That's it. The box tells you what to do next, every time.
+Full details and troubleshooting are in README.md.

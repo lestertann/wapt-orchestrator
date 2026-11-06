@@ -1,0 +1,2 @@
+# Only needed for live probes / crawling. Pure triage of a file works without it.
+requests>=2.28

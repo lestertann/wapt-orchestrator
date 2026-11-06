@@ -1,0 +1,14 @@
+# Optional config file (simple `key: value`, no YAML dep needed).
+# argv overrides this; env (WAPT_LAB/WAPT_EXPLOIT/WAPT_COLLAB) overrides nothing here.
+# Pass with:  python3 run.py --input t.burp --config config.example.yaml
+
+lab:      0aXX.web-security-academy.net
+exploit:  exploit-0aYY.exploit-server.net
+collab:   abcd.oastify.com
+
+mode:     engagement        # engagement | lab
+profile:  bscp              # bscp | generic
+proxy:    http://127.0.0.1:8080
+scope:    web-security-academy.net
+rate_per_sec: 3.0
+timeout:  15.0
