@@ -441,16 +441,22 @@ class LiveState:
             self._crawling = False
 
     # input discovery + active probing -------------------------------------
-    _FORM_RE = re.compile(r"<form\b[^>]*>(.*?)</form>", re.I | re.S)
-    _ATTR_ACTION = re.compile(r'action=["\']([^"\']*)["\']', re.I)
-    _ATTR_METHOD = re.compile(r'method=["\']([^"\']*)["\']', re.I)
-    _FIELD_RE = re.compile(r'<(?:input|textarea|select)\b[^>]*\bname=["\']([^"\']+)["\']', re.I)
-    _QUERY_LINK = re.compile(r'(?:href|action)=["\']([^"\']*\?[^"\']+)["\']', re.I)
+    # attr value may be "quoted", 'quoted', or bare (PortSwigger omits quotes)
+    _ATTR_ACTION = re.compile(r'action=(?:"([^"]*)"|\'([^\']*)\'|([^\s>]+))', re.I)
+    _ATTR_METHOD = re.compile(r'method=(?:"([^"]*)"|\'([^\']*)\'|([^\s>]+))', re.I)
+    _FIELD_RE = re.compile(
+        r'<(?:input|textarea|select)\b[^>]*?\bname=(?:"([^"]+)"|\'([^\']+)\'|([^\s>]+))', re.I)
+    _QUERY_LINK = re.compile(r'(?:href|action)=(?:"([^"]*\?[^"]+)"|\'([^\']*\?[^\']+)\'|([^\s>]*\?[^\s>]+))', re.I)
+
+    @staticmethod
+    def _first(groups):
+        """pick the matched alternative from a quote-optional regex group tuple."""
+        return next((g for g in groups if g), "")
 
     def _inputs_on_page(self, page_url, body):
         """Return [(method, action_url, param, extra_params_dict)] for every
         form field and query-bearing link on this page. These are the inputs
-        the crawl will safely canary-probe."""
+        the crawl will safely canary-probe. Handles unquoted HTML attributes."""
         from urllib.parse import urljoin, urlparse, parse_qs
         out = []
         # 1) HTML forms
@@ -458,15 +464,20 @@ class LiveState:
             attrs, inner = m.group(1), m.group(2)
             am = self._ATTR_ACTION.search(attrs)
             mm = self._ATTR_METHOD.search(attrs)
-            action = urljoin(page_url, am.group(1)) if am and am.group(1) else page_url
-            method = (mm.group(1).upper() if mm else "GET")
-            fields = [f for f in self._FIELD_RE.findall(inner)
-                      if f.lower() not in ("csrf", "csrftoken", "_token", "authenticity_token")]
+            action_val = self._first(am.groups()) if am else ""
+            action = urljoin(page_url, action_val) if action_val else page_url
+            method = (self._first(mm.groups()).upper() if mm else "GET")
+            fields = [self._first(g) for g in self._FIELD_RE.findall(inner)]
+            fields = [f for f in fields
+                      if f and f.lower() not in ("csrf", "csrftoken", "_token", "authenticity_token")]
             for f in fields:
                 extra = {g: "test" for g in fields if g != f}
                 out.append((method, action, f, extra))
         # 2) query-string links (GET params already in the page)
-        for link in self._QUERY_LINK.findall(body):
+        for g in self._QUERY_LINK.findall(body):
+            link = self._first(g)
+            if not link:
+                continue
             full = urljoin(page_url, link)
             base, _, qs = full.partition("?")
             params = parse_qs(qs)
