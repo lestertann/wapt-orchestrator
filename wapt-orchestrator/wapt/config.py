@@ -41,11 +41,11 @@ class Config:
         host = urlparse(url).netloc.lower()
         if not host:
             return False
-        # BSCP lab mode: never block a Web Security Academy lab host. Labs get a
-        # fresh hostname each session and you may run two at once, so a stale or
-        # placeholder scope must never silently drop real lab traffic.
-        if self.mode == "lab" and self.profile == "bscp" \
-                and host.endswith("web-security-academy.net"):
+        # BSCP profile: never block a Web Security Academy lab host, in ANY mode.
+        # Labs get a fresh hostname each session and you may run two at once, so a
+        # stale or placeholder scope must never silently drop real lab traffic.
+        # (This is why a yesterday's-scope config was dropping today's lab.)
+        if self.profile == "bscp" and host.endswith("web-security-academy.net"):
             return True
         if not self.scope:
             # default scope = the lab host, if we know it
