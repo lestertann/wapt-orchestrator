@@ -208,6 +208,7 @@ PAGE = r"""<!doctype html>
   <div class="stages" id="stages"></div>
   <div class="killchain" id="killchain" style="display:none"></div>
   <div class="killchain" id="squad" style="display:none"></div>
+  <div class="killchain" id="activity" style="display:none"></div>
   <div class="bar">
     <button class="proceed" id="proceed" disabled>Proceed →</button>
     <button class="ghost" id="crawl">🕷 Crawl target</button>
@@ -441,15 +442,39 @@ async function renderSquad(){
         return `<span title="${esc(tip)}" style="display:inline-block;margin:2px 3px 0 0;padding:2px 7px;border-radius:10px;font-size:11px;background:${col};color:${fg};font-weight:${a.found?'700':'400'}">${mark}${esc(a.agent)}</span>`;
       }).join('');
       const lead = st.lead? `<b style="color:#d29922">${esc(st.lead)}</b> has the lead` : '<span style="color:#687684">no agent has a lead yet</span>';
-      const pl = st.agents.find(a=>a.found && a.payload);
-      const plrow = pl? `<pre style="margin:5px 0 0;white-space:pre-wrap;color:#7ee787;font-size:11px;max-height:42px;overflow:auto">${esc(pl.payload)}</pre>`:'';
+      const hits = st.agents.filter(a=>a.found);
+      const rank = hits.length? `<div style="margin-top:6px;font-size:12px;color:#adbac7"><b style="color:#e6edf3">Ranked vectors:</b> ${hits.map((a,i)=>`#${i+1} ${esc(a.agent)} <span style="color:#687684">(${esc(a.confidence)}${a.confirmed?' ✓':''})</span>`).join(' · ')}</div>`:'';
+      const leadA = hits[0];
+      const repro = (leadA && leadA.repro && leadA.repro.length)
+        ? `<details style="margin-top:6px"><summary style="cursor:pointer;color:#58a6ff;font-size:12px">▸ Recreate it yourself (${esc(leadA.agent)})</summary>`
+          + `<ol style="margin:6px 0 0 2px;padding-left:18px;color:#adbac7;font-size:12px;line-height:1.5">`
+          + leadA.repro.map(s=>`<li style="margin-bottom:4px">${esc(s).replace(/\\n\\s*/g,'<br><code style=\"color:#7ee787\">').replace(/$/,'')}</li>`).join('')
+          + `</ol></details>` : '';
       return `<div style="padding:8px 10px;border-left:3px solid ${st.solved?'#2ea043':(st.lead?'#d29922':'#54636e')};background:${on?'#1b2430':'#141a22'};border-radius:6px;margin-bottom:6px">
         <div style="font-weight:600;color:#e6edf3">STAGE ${st.stage} · ${st.agents.length} agents up — ${lead}</div>
-        <div style="margin-top:5px;line-height:1.9">${chips}</div>${plrow}</div>`;
+        <div style="margin-top:5px;line-height:1.9">${chips}</div>${rank}${repro}</div>`;
     }).join('');
     box.innerHTML = `<div style="font-weight:700;color:#e6edf3;margin:2px 0 7px">🛰 Specialist squad — only each stage's own vuln-class agents run</div>${rows}`;
     box.style.display='block';
   }catch(e){ /* squad endpoint optional */ }
+}
+
+async function renderActivity(){
+  try{
+    const d = await (await fetch('/api/activity')).json();
+    const box = $('#activity');
+    if(!d || !d.items || !d.items.length){ box.style.display='none'; return; }
+    const rows = d.items.map(it=>{
+      const ok = it.status && it.status<400;
+      const sc = it.status? (it.status>=500?'#f85149':(it.status>=400?'#d29922':'#2ea043')) : '#687684';
+      return `<div style="display:flex;gap:8px;font-size:11px;font-family:ui-monospace,monospace;padding:2px 0;border-bottom:1px solid #1b222b">
+        <span style="color:#687684">${esc(it.time)}</span>
+        <span style="color:${sc};min-width:28px">${it.status||'—'}</span>
+        <span style="color:#adbac7;flex:1">${esc(it.note||it.url)}</span></div>`;
+    }).join('');
+    box.innerHTML = `<div style="font-weight:700;color:#e6edf3;margin:2px 0 7px">📡 Agents testing — live (${d.total} probes fired)</div>${rows}`;
+    box.style.display='block';
+  }catch(e){ /* activity endpoint optional */ }
 }
 
 async function tick(){
@@ -473,6 +498,7 @@ async function tick(){
     renderLearn(s);
     renderKillchain();
     renderSquad();
+    renderActivity();
     const ago = s.last_ingest_ago;
     $('#live').innerHTML = ago==null ? '● <span style="color:#67788a">waiting for traffic…</span>'
       : (ago<5 ? '<span class="on">● live</span>' : `● last ${ago}s ago`);

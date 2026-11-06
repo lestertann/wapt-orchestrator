@@ -161,6 +161,13 @@ def d_host_reflect(t, ctx) -> Iterable[Signal]:
                      "request Host value reflected into response/link",
                      C.MEDIUM if is_resetish else C.LOW,
                      t.url, evidence=host, txn=t)
+    # X-Forwarded-Host reflected -> password-reset poisoning / link injection
+    xfh = t.req_headers.get("X-Forwarded-Host") or t.req_headers.get("x-forwarded-host", "")
+    if xfh and xfh in b:
+        yield Signal("host-header",
+                     "X-Forwarded-Host reflected into response/link — reset-poisoning surface",
+                     C.MEDIUM if is_resetish else C.LOW,
+                     t.url, evidence="XFH: " + xfh, txn=t)
     # localhost / 127.0.0.1 admin bypass — the app gates /admin on locality,
     # which the Host header controls. Tell: an admin page that says "local only".
     if re.search(r"/admin\b", t.url, re.I) and \

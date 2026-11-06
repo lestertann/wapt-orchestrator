@@ -215,6 +215,20 @@ class LiveState:
         return {"stages": stages, "solved": done, "total": 3,
                 "current": int(self.current)}
 
+    def activity_feed(self, limit: int = 24) -> dict:
+        """Recent probes the agents fired — the live 'what's being tested now'
+        feed. Reads the probe audit log and labels each by what it was testing."""
+        recs = self.session.probe_log[-limit:]
+        import time as _t
+        items = []
+        for r in reversed(recs):
+            items.append({
+                "time": _t.strftime("%H:%M:%S", _t.localtime(r.ts)),
+                "method": r.method, "status": r.status,
+                "note": r.note or "", "url": r.url,
+            })
+        return {"items": items, "total": len(self.session.probe_log)}
+
     def squad_report(self) -> dict:
         """Run the per-stage specialist-agent squad over current traffic. Only
         the stage's own vuln-class agents are brought up — Stage 1's 10, Stage
@@ -387,6 +401,8 @@ class LiveState:
             origin = urlparse(start).netloc
             seen: set[str] = set()
             queue = [start]
+            inject_points: list = []
+            self._inject_seen = set()
             while queue and self.crawl_pages < max_pages:
                 url = queue.pop(0)
                 if url in seen:
@@ -405,15 +421,125 @@ class LiveState:
                 ct = txn.header("content-type") or ""
                 if "html" not in ct:
                     continue
-                for h in href.findall(txn.resp_body or ""):
+                body = txn.resp_body or ""
+                # collect injection points on this page (forms + param-bearing links)
+                for ip in self._inputs_on_page(url, body):
+                    key = (ip[0], ip[1], ip[2])
+                    if key not in self._inject_seen:
+                        self._inject_seen.add(key)
+                        inject_points.append(ip)
+                for h in href.findall(body):
                     nxt = urljoin(url, h)
                     if urlparse(nxt).netloc == origin and nxt not in seen and nxt not in queue:
                         # skip logout / destructive links while crawling
                         if re.search(r"logout|signout|delete|/admin/delete", nxt, re.I):
                             continue
                         queue.append(nxt)
+            # ---- active probe pass: fire safe canaries into every input ----
+            self._active_probe(inject_points, cookie)
         finally:
             self._crawling = False
+
+    # input discovery + active probing -------------------------------------
+    _FORM_RE = re.compile(r"<form\b[^>]*>(.*?)</form>", re.I | re.S)
+    _ATTR_ACTION = re.compile(r'action=["\']([^"\']*)["\']', re.I)
+    _ATTR_METHOD = re.compile(r'method=["\']([^"\']*)["\']', re.I)
+    _FIELD_RE = re.compile(r'<(?:input|textarea|select)\b[^>]*\bname=["\']([^"\']+)["\']', re.I)
+    _QUERY_LINK = re.compile(r'(?:href|action)=["\']([^"\']*\?[^"\']+)["\']', re.I)
+
+    def _inputs_on_page(self, page_url, body):
+        """Return [(method, action_url, param, extra_params_dict)] for every
+        form field and query-bearing link on this page. These are the inputs
+        the crawl will safely canary-probe."""
+        from urllib.parse import urljoin, urlparse, parse_qs
+        out = []
+        # 1) HTML forms
+        for m in re.finditer(r"<form\b([^>]*)>(.*?)</form>", body, re.I | re.S):
+            attrs, inner = m.group(1), m.group(2)
+            am = self._ATTR_ACTION.search(attrs)
+            mm = self._ATTR_METHOD.search(attrs)
+            action = urljoin(page_url, am.group(1)) if am and am.group(1) else page_url
+            method = (mm.group(1).upper() if mm else "GET")
+            fields = [f for f in self._FIELD_RE.findall(inner)
+                      if f.lower() not in ("csrf", "csrftoken", "_token", "authenticity_token")]
+            for f in fields:
+                extra = {g: "test" for g in fields if g != f}
+                out.append((method, action, f, extra))
+        # 2) query-string links (GET params already in the page)
+        for link in self._QUERY_LINK.findall(body):
+            full = urljoin(page_url, link)
+            base, _, qs = full.partition("?")
+            params = parse_qs(qs)
+            for p in params:
+                if p.lower() in ("csrf", "token", "nonce"):
+                    continue
+                extra = {k: (v[0] if v else "") for k, v in params.items() if k != p}
+                out.append(("GET", base, p, extra))
+        return out[:40]
+
+    def _active_probe(self, points, cookie, max_probes: int = 80):
+        """Fire two safe canaries per input: an alnum reflection marker and a
+        single-quote SQL marker. Reflections -> XSS signal; SQL errors ->
+        SQLi signal. Purely detective: no exploit payloads."""
+        from urllib.parse import urlencode
+        import random
+        hdr = {"Cookie": cookie} if cookie else None
+        fired = 0
+        for method, action, param, extra in points:
+            if fired >= max_probes:
+                break
+            tag = f"{random.randrange(16**6):06x}"
+            short = action.split("//", 1)[-1].split("/", 1)[-1]
+            for kind, canary in (("XSS/reflection", f"wapt{tag}"),
+                                 ("SQLi/quote", f"wapt{tag}'")):
+                if fired >= max_probes:
+                    break
+                data = dict(extra); data[param] = canary
+                note = f"{kind} probe → {param} @ /{short}"
+                try:
+                    if method == "POST":
+                        txn = self.session.fetch("POST", action, headers=hdr,
+                                                 body=urlencode(data), note=note)
+                    else:
+                        q = urlencode(data)
+                        txn = self.session.fetch("GET", f"{action}?{q}", headers=hdr,
+                                                 note=note)
+                except Exception:
+                    continue
+                if txn is not None:
+                    fired += 1
+                    self.add(txn)
+        # header probes — Host/X-Forwarded-Host (reset poisoning) + Origin (CORS)
+        self._probe_headers(cookie)
+
+    def _probe_headers(self, cookie):
+        """Test the headers a WAPT actually tampers: X-Forwarded-Host (password
+        reset poisoning / routing) and Origin (CORS). Canaries only — detective."""
+        import random
+        base = {"Cookie": cookie} if cookie else {}
+        # pick a few pages worth testing headers on: home + any reset/forgot/account
+        pages = []
+        for t in self.txns:
+            low = t.url.lower()
+            if t.url.rstrip("/").endswith(self.cfg.lab) or any(
+                    k in low for k in ("forgot", "reset", "password", "account", "login", "my-account")):
+                if t.url not in pages:
+                    pages.append(t.url)
+        pages = pages[:6] or [f"https://{self.cfg.lab}/"]
+        for url in pages:
+            tag = f"{random.randrange(16**6):06x}"
+            probes = [
+                ({"X-Forwarded-Host": f"wapt{tag}.evil"}, f"host-header probe → X-Forwarded-Host @ {url}"),
+                ({"Origin": f"https://wapt{tag}.evil"},    f"CORS probe → Origin @ {url}"),
+            ]
+            for extra, note in probes:
+                h = dict(base); h.update(extra)
+                try:
+                    txn = self.session.fetch("GET", url, headers=h, note=note)
+                except Exception:
+                    continue
+                if txn is not None:
+                    self.add(txn)
 
     def toggle_autopilot(self, on: bool | None = None) -> dict:
         with self.lock:
@@ -523,6 +649,8 @@ def make_handler(state: LiveState):
                 return self._send(200, json.dumps(state.agents_report()))
             if self.path.startswith("/api/squad"):
                 return self._send(200, json.dumps(state.squad_report()))
+            if self.path.startswith("/api/activity"):
+                return self._send(200, json.dumps(state.activity_feed()))
             return self._send(404, "{}")
 
         def do_POST(self):
