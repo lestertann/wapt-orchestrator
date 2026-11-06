@@ -30,8 +30,38 @@ from dataclasses import dataclass, field
 
 from . import templating as T
 from . import tailor as TL
+from . import teach
 from .models import Candidate, Confidence, Stage, Transaction
 from .triage import TITLES, triage
+
+
+def reproduction(cand: Candidate) -> list[str]:
+    """Numbered 'do it yourself' walkthrough for a finding — the teaching piece.
+    Built from the vuln lesson + the real detect/exploit payloads tailored to
+    this endpoint, so the user can reproduce the agent's work by hand."""
+    lesson = teach.lesson(cand.vuln_class)
+    where = cand.param or "the input"
+    path = (cand.target_url or cand.location).split("?", 1)[0]
+    steps: list[str] = []
+    steps.append(f"Spot it: {lesson['ioc']}")
+    steps.append(f"Why it works: {lesson['why']}")
+    # the concrete detect probe (safe canary) tailored to this endpoint
+    detect = next((p for p in cand.tailored if p.kind == "detect"), None) \
+        or next((p for p in cand.payloads if p.kind == "detect"), None)
+    if detect:
+        steps.append(f"Confirm: send this to {where} @ {path} and watch the response "
+                     f"({lesson['tell']}):\n       {detect.body.splitlines()[0]}")
+    else:
+        steps.append(f"Confirm: {lesson['tell']}")
+    # the exploit payload(s)
+    exploit = next((p for p in cand.tailored if p.kind == "exploit"), None) \
+        or next((p for p in cand.payloads if p.kind == "exploit"), None)
+    if exploit:
+        steps.append(f"Exploit: once confirmed, fire this at {where}:\n       "
+                     f"{exploit.body.splitlines()[0]}")
+    if cand.labs:
+        steps.append(f"Stuck? Mirror this PortSwigger lab: {cand.labs[0]}")
+    return steps
 
 
 # ----------------------------------------------------------------------------
@@ -132,6 +162,7 @@ class VulnFinding:
     confirmed: bool = False
     confirm_note: str = ""
     labs: list[str] = field(default_factory=list)
+    repro: list[str] = field(default_factory=list)
     candidate: Candidate | None = None
     score: float = 0.0
 
@@ -204,6 +235,7 @@ class VulnAgent:
         top = exploit or (cand.payloads[0] if cand.payloads else None)
         f.top_payload = top.body if top else ""
         f.confidence = str(cand.confidence)
+        f.repro = reproduction(cand)
         # live probe (optional) — this agent fires its own safe confirm
         if confirm_fn is not None:
             try:
@@ -302,6 +334,7 @@ class SquadCoordinator:
                         "param": f.param, "targets": f.targets,
                         "payload": (f.top_payload.splitlines()[0][:160] if f.top_payload else ""),
                         "labs": f.labs,
+                        "repro": f.repro,
                     } for f in rep.findings
                 ],
             })
@@ -319,14 +352,19 @@ class SquadCoordinator:
             lines.append("=" * 70)
             for f in rep.findings:
                 lines.append(f.render())
-            lead = rep.lead
-            if lead:
+            hits = rep.hits
+            if hits:
                 lines.append("")
-                lines.append(f"  >>> LEAD: {lead.agent} ({lead.confidence})")
-                lines.append(f"      what : {lead.what_is}")
-                lines.append(f"      do   : {lead.next_step}")
-                if lead.top_payload:
-                    lines.append(f"      fire : {lead.top_payload.splitlines()[0][:110]}")
+                lines.append("  RANKED ATTACK VECTORS (most promising first):")
+                for i, f in enumerate(hits, 1):
+                    tick = " ✓CONFIRMED" if f.confirmed else ""
+                    lines.append(f"    #{i}  {f.agent} — {f.confidence}{tick}  @ {f.where}")
+                lead = hits[0]
+                lines.append("")
+                lines.append(f"  >>> FOOTHOLD LEAD: {lead.agent} ({lead.confidence})")
+                lines.append("      ── recreate it yourself ──")
+                for n, step in enumerate(lead.repro, 1):
+                    lines.append(f"      {n}. {step}")
             else:
                 lines.append("  (no lead yet — crawl/probe more of this stage)")
         done = sum(1 for r in reports if r.solved)
